@@ -21,4 +21,3 @@ lib_MESA_timer.so: $(OBJS)
 	(rm -f $@; gcc -o $@ $(CFLAGS) $^; cp $@ $(LIBPATH);)
 clean:
 	rm -f *.o $(TARGET)
-

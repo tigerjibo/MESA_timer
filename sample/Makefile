@@ -1,7 +1,7 @@
 CC=gcc -g -O0
 LIB_PATH=../lib
 INC=-I../include
-LIB=../lib/lib_MESA_timer.a 
+LIB=../lib/lib_MESA_timer.a
 
 TARGET=sample
 

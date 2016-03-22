@@ -27,10 +27,10 @@ void unit_test_for_queue()
     struct timeval current_time;
     long timeout = 5000;
     long curtime;
-    MESA_timer_index_t * indexs[10000]; 
+    MESA_timer_index_t * indexs[10000];
     event_t events[10000];
     int i = 0;
-    while(i < 10000) 
+    while(i < 10000)
     {
         events[i].id = i;
         gettimeofday(&current_time, NULL);
@@ -64,11 +64,11 @@ void unit_test_for_wheel()
     struct timeval current_time;
     long curtime;
 
-    MESA_timer_index_t * indexs[10000]; 
+    MESA_timer_index_t * indexs[10000];
     event_t events[10000];
     int i = 0;
 
-    while(i < 10000) 
+    while(i < 10000)
     {
         long timeout = (rand() % 10 + 1) * 1000;
         events[i].id = i;
@@ -102,11 +102,11 @@ void wheel_test()
     struct timeval current_time;
     long curtime;
 
-    MESA_timer_index_t * indexs[20]; 
+    MESA_timer_index_t * indexs[20];
     event_t events[20];
     int i = 0;
 
-    while(i < 20) 
+    while(i < 20)
     {
         long timeout = rand() % 10;
         events[i].id = i;
