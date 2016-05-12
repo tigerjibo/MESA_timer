@@ -12,8 +12,6 @@
 extern "C" {
 #endif
 
-#include "queue.h"
-
 /* Timer's handler */
 typedef struct{
 }MESA_timer_t;
@@ -21,7 +19,8 @@ typedef struct{
 typedef struct{
 }MESA_timer_index_t;
 
-typedef void timer_cb_t(void * event);
+typedef void (*timeout_cb_t)(void *event);
+typedef void (*event_free_cb_t)(void *event);
 
 #define	TM_TYPE_QUEUE 0
 #define	TM_TYPE_WHEEL 1
@@ -42,7 +41,7 @@ typedef void timer_cb_t(void * event);
  *     On success, return a timer, else return NULL
  *
  **/
-MESA_timer_t * MESA_timer_create(long wheel_size, int TM_TYPE);
+MESA_timer_t *MESA_timer_create(long wheel_size, int TM_TYPE);
 
 
 /**
@@ -52,15 +51,21 @@ MESA_timer_t * MESA_timer_create(long wheel_size, int TM_TYPE);
  *     timer: The timer returned by MESA_timer_create function.
  *     current_time: The current time when add the timer element. It MUST >= 0
  *     timeout: The work's timeout time. It MUST >= 0
- *     callback: It is callback function of a work when timeout.
+ *     timeout_cb: It is callback function of a work when timeout.
  *     event: It is the event for user to define.
+ *     free_cb: event's free callback function.
  *     index: Address(Index) of the timer_node pointer related to the event is
  *            stored in index.
  * Return:
  *      On success 0 is returned, else -1 is returned
  **/
-int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
-    timer_cb_t callback, void* event, MESA_timer_index_t ** index);
+int MESA_timer_add(MESA_timer_t *timer, 
+                   long current_time, 
+                   long timeout,
+                   timeout_cb_t timeout_cb, 
+                   void* event, 
+                   event_free_cb_t free_cb,
+                   MESA_timer_index_t **index);
 
 
 /**
@@ -70,13 +75,10 @@ int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
  *     timer: The timer created by MESA_timer_create.
  *     index: MESA_timer_index_t structure returned by MESA_timer_add function.
  *            Now we want to delete it.
- *     callback: Callback function we want to invoke
- *     para: The parameters used by callback.
  * Return:
  *     On success, return the event's expire. Otherwise -1 is returned.
  **/
-long MESA_timer_del(MESA_timer_t * timer, MESA_timer_index_t * index, \
-    timer_cb_t callback, void * para);
+long MESA_timer_del(MESA_timer_t *timer, MESA_timer_index_t *index);
 
 
 /**
@@ -94,7 +96,7 @@ long MESA_timer_del(MESA_timer_t * timer, MESA_timer_index_t * index, \
  *     Return execute times of callback if success, 0 means no timeout event.
  *     Return -1 when error occurs.
  **/
-long MESA_timer_check(MESA_timer_t * timer, long current_time, long max_cb_times);
+long MESA_timer_check(MESA_timer_t *timer, long current_time, long max_cb_times);
 
 
 /**
@@ -102,13 +104,11 @@ long MESA_timer_check(MESA_timer_t * timer, long current_time, long max_cb_times
  *     Destroy the given timer, free the memory and execute callback function.
  * Params:
  *     timer: The timer we wants to destroy.
- *     callback: Callback function.
- *     para: Parameters of callback.
  * Return:
  *     void
  **/
 
-void MESA_timer_destroy(MESA_timer_t * timer, timer_cb_t * callback, void * para);
+void MESA_timer_destroy(MESA_timer_t *timer);
 
 
 /**
@@ -119,7 +119,7 @@ void MESA_timer_destroy(MESA_timer_t * timer, timer_cb_t * callback, void * para
  * Return:
  *    Return the count of events in timer.
  **/
-long MESA_timer_count(MESA_timer_t * timer);
+long MESA_timer_count(MESA_timer_t *timer);
 
 
 /**
@@ -131,7 +131,7 @@ long MESA_timer_count(MESA_timer_t * timer);
  *     Return the memory occupancy of timer.
  **/
 
-long MESA_timer_memsize(MESA_timer_t * timer);
+long MESA_timer_memsize(MESA_timer_t *timer);
 
 
 /**
@@ -145,7 +145,7 @@ long MESA_timer_memsize(MESA_timer_t * timer);
  * Return:
  *     On success, 0 is returned, else -1 is returned.
  **/
-int MESA_timer_reset(MESA_timer_t * timer, MESA_timer_index_t * index, long current_time, long timeout);
+int MESA_timer_reset(MESA_timer_t *timer, MESA_timer_index_t *index, long current_time, long timeout);
 
 #ifdef	__cplusplus
 }

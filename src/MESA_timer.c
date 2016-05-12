@@ -4,19 +4,22 @@
 * version: v1.0
 * last modify:2015-8-19
 ************************************************/
+#include "MESA_timer.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include "MESA_timer.h"
+#include <sys/queue.h>
 
+const char *MESA_timer_version_VERSION_20150918 = "MESA_timer_version_VERSION_20150918";
 
-#ifdef __cplusplus
-extern "C"
-{
+#ifndef IN_TIMER 
+#define IN_TIMER 1
 #endif
 
-const char * MESA_timer_version_VERSION_20150918 = "MESA_timer_version_VERSION_20150918";
-
+#ifndef NOT_IN_TIMER
+#define NOT_IN_TIMER 0
+#endif
 
 /**
  * A timer element's structure
@@ -25,9 +28,12 @@ typedef struct _timer_elem_t{
     long expire;                 /* event's absolute expire */
     int rotation_cnt;            /* used in time wheel */
     int cursor;                  /* use in time wheel, representing the spoke index */
-    void (*callback)(void *);    /* event's callback function */
-    void * event;                /* event */
+    timeout_cb_t timeout_cb;      /* event's callback function */
 
+    void *event;                 /* event */
+    event_free_cb_t free_cb;     /* event free callback function */
+
+    int status;                  /* whether the elem is in timer: IN_TIMER or NOT_IN_TIMER */
     TAILQ_ENTRY(_timer_elem_t) ENTRYS;
 }timer_elem_t;
 
@@ -55,7 +61,7 @@ typedef struct _timer_wheel_t{
     long create_time;                           /* creating time of wheel, we consider it as the first add's time */
     long spoke_index;                           /* current spoke index*/
     long last_check_relative_tick;              /* last check's relative ticks */
-    struct TQ * spokes;       /* queues array */
+    struct TQ *spokes;       /* queues array */
 }timer_wheel_t;
 
 
@@ -74,9 +80,9 @@ typedef struct _MESA_timer_inner_t{
 
 
 
-MESA_timer_t * MESA_timer_create(long wheel_size, int tm_type)
+MESA_timer_t *MESA_timer_create(long wheel_size, int tm_type)
 {
-    MESA_timer_inner_t * timer = NULL;
+    MESA_timer_inner_t *timer = NULL;
     switch(tm_type)
     {
         case TM_TYPE_QUEUE:
@@ -123,20 +129,24 @@ MESA_timer_t * MESA_timer_create(long wheel_size, int tm_type)
 
 
 
-void MESA_timer_destroy(MESA_timer_t * timer, timer_cb_t * callback, void * para)
+void MESA_timer_destroy(MESA_timer_t *timer)
 {
     assert(timer != NULL);
 
-    MESA_timer_inner_t * _timer = (MESA_timer_inner_t *)timer;
+    MESA_timer_inner_t *_timer = (MESA_timer_inner_t *)timer;
     switch(_timer->type)
     {
         case TM_TYPE_QUEUE:
         {
-            timer_elem_t * tmp_elem = TAILQ_FIRST(&(_timer->timer_queue.queue));
-            timer_elem_t * tmp;
+            timer_elem_t *tmp_elem = TAILQ_FIRST(&(_timer->timer_queue.queue));
+            timer_elem_t *tmp;
             while(tmp_elem != NULL)
             {
                 tmp = TAILQ_NEXT(tmp_elem, ENTRYS);
+                if(tmp_elem->free_cb != NULL)
+                {
+                    tmp_elem->free_cb(tmp_elem->event);
+                }
                 free(tmp_elem);
                 tmp_elem = tmp;
             }
@@ -147,12 +157,16 @@ void MESA_timer_destroy(MESA_timer_t * timer, timer_cb_t * callback, void * para
             int i;
             for(i = 0; i < _timer->timer_wheel.wheel_size; i++)
             {
-                struct TQ * spoke = &(_timer->timer_wheel.spokes[i]);
-                timer_elem_t * tmp_elem = TAILQ_FIRST(spoke);
-                timer_elem_t * tmp;
+                struct TQ *spoke = &(_timer->timer_wheel.spokes[i]);
+                timer_elem_t *tmp_elem = TAILQ_FIRST(spoke);
+                timer_elem_t *tmp;
                 while(tmp_elem != NULL)
                 {
                     tmp = TAILQ_NEXT(tmp_elem, ENTRYS);
+                    if(tmp_elem->free_cb != NULL)
+                    {
+                        tmp_elem->free_cb(tmp_elem->event);
+                    }
                     free(tmp_elem);
                     tmp_elem = tmp;
                 }
@@ -163,19 +177,23 @@ void MESA_timer_destroy(MESA_timer_t * timer, timer_cb_t * callback, void * para
         default:
             break;
     }
-
     free(timer);
     return;
 }
 
 
 
-int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
-    timer_cb_t callback, void * event, MESA_timer_index_t ** index)
+int MESA_timer_add(MESA_timer_t *timer, 
+                   long current_time, 
+                   long timeout,
+                   timeout_cb_t timeout_cb,
+                   void *event, 
+                   event_free_cb_t free_cb,
+                   MESA_timer_index_t **index)
 {
     assert(timer != 0 && current_time >= 0 && timeout >= 0);
 
-    MESA_timer_inner_t * _timer = (MESA_timer_inner_t *)timer;
+    MESA_timer_inner_t *_timer = (MESA_timer_inner_t *)timer;
     switch(_timer->type)
     {
         case TM_TYPE_QUEUE:
@@ -188,13 +206,15 @@ int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
             }
             _timer->timer_queue.last_expire_time = expire;
 
-            timer_elem_t * elem = (timer_elem_t *)malloc(sizeof(timer_elem_t));
+            timer_elem_t *elem = (timer_elem_t *)malloc(sizeof(timer_elem_t));
             elem->expire = expire;
-            elem->event = event;
-            elem->callback = callback;
+            elem->timeout_cb = timeout_cb;
 
+            elem->event = event;
+            elem->free_cb = free_cb;
             /* insert a timer ENTRYS to tail of timer queue */
             TAILQ_INSERT_TAIL(&(_timer->timer_queue.queue), elem, ENTRYS);
+            elem->status= IN_TIMER;
 
             _timer->elem_cnt += 1;
             _timer->mem_ocupy += sizeof(timer_elem_t);
@@ -204,7 +224,7 @@ int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
         }
         case TM_TYPE_WHEEL:
         {
-            timer_wheel_t * wheel = &(_timer->timer_wheel);
+            timer_wheel_t *wheel = &(_timer->timer_wheel);
 
             /* the first timer ENTRYS start the timer, and current_time's relative time is 0 */
             if(wheel->last_check_relative_tick == -1)
@@ -214,10 +234,12 @@ int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
                 wheel->last_check_relative_tick = 0;
             }
 
-            timer_elem_t * elem = (timer_elem_t *)malloc(sizeof(timer_elem_t));
+            timer_elem_t *elem = (timer_elem_t *)malloc(sizeof(timer_elem_t));
             elem->expire = current_time + timeout;
-            elem->callback = callback;
+            elem->timeout_cb = timeout_cb;
+
             elem->event = event;
+            elem->free_cb = free_cb;
 
             long td = timeout % wheel->wheel_size;
             elem->rotation_cnt = timeout / wheel->wheel_size;
@@ -226,6 +248,7 @@ int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
 
             /* insert a timer ENTRYS to tail of timer queue */
             TAILQ_INSERT_TAIL(&(wheel->spokes[cursor]), elem, ENTRYS);
+            elem->status = IN_TIMER;
 
             /* update stat data */
             _timer->elem_cnt += 1;
@@ -244,13 +267,17 @@ int MESA_timer_add(MESA_timer_t * timer, long current_time, long timeout, \
 
 
 
-long MESA_timer_del(MESA_timer_t * timer, MESA_timer_index_t * index, \
-    timer_cb_t callback, void * para)
+long MESA_timer_del(MESA_timer_t *timer, MESA_timer_index_t* index)
 {
     assert(timer != NULL && index != NULL);
 
-    MESA_timer_inner_t * _timer = (MESA_timer_inner_t *)timer;
-    timer_elem_t * elem = (timer_elem_t *)index;
+    MESA_timer_inner_t *_timer = (MESA_timer_inner_t *)timer;
+    timer_elem_t *elem = (timer_elem_t *)index;
+
+    if(elem->status == NOT_IN_TIMER)
+    {
+        return -1;
+    }
 
     long ret_timeout = -1;
     switch(_timer->type)
@@ -260,6 +287,7 @@ long MESA_timer_del(MESA_timer_t * timer, MESA_timer_index_t * index, \
             ret_timeout = elem->expire;
             /* remove from timer queue */
             TAILQ_REMOVE(&(_timer->timer_queue.queue), elem, ENTRYS);
+            elem->status = NOT_IN_TIMER;
 
             _timer->elem_cnt --;
             _timer->mem_ocupy -= sizeof(timer_elem_t);
@@ -267,7 +295,7 @@ long MESA_timer_del(MESA_timer_t * timer, MESA_timer_index_t * index, \
             /* update timer queue's last_expire_time */
             if(!TAILQ_EMPTY(&(_timer->timer_queue.queue)))
             {
-                timer_elem_t * tail = TAILQ_LAST(&(_timer->timer_queue.queue), TQ);
+                timer_elem_t *tail = TAILQ_LAST(&(_timer->timer_queue.queue), TQ);
                 _timer->timer_queue.last_expire_time = tail->expire;
             }
             else
@@ -275,6 +303,10 @@ long MESA_timer_del(MESA_timer_t * timer, MESA_timer_index_t * index, \
                 _timer->timer_queue.last_expire_time = -1;
             }
 
+            if(elem->free_cb != NULL)
+            {
+                elem->free_cb(elem->event);
+            }
             free(elem);
             break;
         }
@@ -282,37 +314,39 @@ long MESA_timer_del(MESA_timer_t * timer, MESA_timer_index_t * index, \
         {
             ret_timeout = elem->expire;
             TAILQ_REMOVE(&(_timer->timer_wheel.spokes[elem->cursor]), elem, ENTRYS);
+            elem->status = NOT_IN_TIMER;
+
             _timer->elem_cnt --;
             _timer->mem_ocupy -= sizeof(timer_elem_t);
 
+            if(elem->free_cb != NULL)
+            {
+                elem->free_cb(elem->event);
+            }
             free(elem);
             break;
         }
         default:
             break;
     }
-
-    if(callback != NULL)
-        callback(para);
-
     return ret_timeout;
 }
 
 
 
-long MESA_timer_check(MESA_timer_t * timer, long current_time, long max_cb_times)
+long MESA_timer_check(MESA_timer_t *timer, long current_time, long max_cb_times)
 {
     assert(timer != NULL && current_time >= 0 && max_cb_times >= 0);
 
     long cb_cnt = 0;
-    MESA_timer_inner_t * _timer = (MESA_timer_inner_t *)timer;
+    MESA_timer_inner_t *_timer = (MESA_timer_inner_t *)timer;
 
     switch(_timer->type)
     {
         case TM_TYPE_QUEUE:
         {
-            timer_elem_t * tmp_elem = TAILQ_FIRST(&(_timer->timer_queue.queue));
-            timer_elem_t * tmp;
+            timer_elem_t *tmp_elem = TAILQ_FIRST(&(_timer->timer_queue.queue));
+            timer_elem_t *tmp;
             while(tmp_elem != NULL)
             {
                 if(cb_cnt >= max_cb_times)
@@ -325,24 +359,33 @@ long MESA_timer_check(MESA_timer_t * timer, long current_time, long max_cb_times
                     break;
                 }
 
-                /* elem has timed out */
-                tmp_elem->callback(tmp_elem->event);
-                cb_cnt ++;
-
+                tmp = TAILQ_NEXT(tmp_elem, ENTRYS);
                 TAILQ_REMOVE(&(_timer->timer_queue.queue), tmp_elem, ENTRYS);
+                tmp_elem->status= NOT_IN_TIMER;
+            
                 _timer->elem_cnt --;
                 _timer->mem_ocupy -= sizeof(timer_elem_t);
 
-                tmp = TAILQ_NEXT(tmp_elem, ENTRYS);
-                free(tmp_elem);
+                /* elem has timed out */
+                tmp_elem->timeout_cb(tmp_elem->event);
+                cb_cnt ++;
+
+                if(tmp_elem->status == NOT_IN_TIMER)
+                {
+                    if(tmp_elem->free_cb != NULL)
+                    {
+                        tmp_elem->free_cb(tmp_elem->event);
+                    }
+                    free(tmp_elem);
+                }
                 tmp_elem = tmp;
             }
             return cb_cnt;
         }
         case TM_TYPE_WHEEL:
         {
-            timer_wheel_t * wheel = &(_timer->timer_wheel);
-            struct TQ * spoke;
+            timer_wheel_t *wheel = &(_timer->timer_wheel);
+            struct TQ *spoke;
 
             if(wheel->create_time == -1)
                 return 0;
@@ -352,8 +395,8 @@ long MESA_timer_check(MESA_timer_t * timer, long current_time, long max_cb_times
             for(i = 0; i < tickcnt; i++)
             {
                 spoke = &(wheel->spokes[wheel->spoke_index]);
-                timer_elem_t * tmp_elem = TAILQ_FIRST(spoke);
-                timer_elem_t * tmp;
+                timer_elem_t *tmp_elem = TAILQ_FIRST(spoke);
+                timer_elem_t *tmp;
                 while(tmp_elem != NULL)
                 {
                     if(tmp_elem->rotation_cnt != 0)
@@ -368,15 +411,24 @@ long MESA_timer_check(MESA_timer_t * timer, long current_time, long max_cb_times
                             cb_max_flag = 1;
                             break;
                         }
-                        tmp_elem->callback(tmp_elem->event);
-                        cb_cnt ++;
-
                         tmp = TAILQ_NEXT(tmp_elem, ENTRYS);
                         TAILQ_REMOVE(spoke, tmp_elem, ENTRYS);
+                        tmp_elem->status = NOT_IN_TIMER;
+
                         _timer->elem_cnt --;
                         _timer->mem_ocupy -= sizeof(timer_elem_t);
+                        
+                        tmp_elem->timeout_cb(tmp_elem->event);
+                        cb_cnt ++;
 
-                        free(tmp_elem);
+                        if(tmp_elem->status == NOT_IN_TIMER)
+                        {
+                            if(tmp_elem->free_cb != NULL)
+                            {
+                                tmp_elem->free_cb(tmp_elem->event); 
+                            }
+                            free(tmp_elem);
+                        }
                         tmp_elem = tmp;
                     }
                 }
@@ -396,24 +448,30 @@ long MESA_timer_check(MESA_timer_t * timer, long current_time, long max_cb_times
 
 
 
-int MESA_timer_reset(MESA_timer_t * timer, MESA_timer_index_t * index, long current_time, long timeout)
+int MESA_timer_reset(MESA_timer_t *timer, MESA_timer_index_t *index, long current_time, long timeout)
 {
     assert(timer != NULL && index != NULL);
 
-    MESA_timer_inner_t * _timer = (MESA_timer_inner_t *)timer;
-    timer_elem_t * elem = (timer_elem_t *)index;
+    MESA_timer_inner_t *_timer = (MESA_timer_inner_t *)timer;
+    timer_elem_t *elem = (timer_elem_t *)index;
 
     switch(_timer->type)
     {
         case TM_TYPE_QUEUE:
         {
             /* remove from timer queue */
-            TAILQ_REMOVE(&(_timer->timer_queue.queue), elem, ENTRYS);
+            if(elem->status == IN_TIMER)
+            {
+                TAILQ_REMOVE(&(_timer->timer_queue.queue), elem, ENTRYS);
+                elem->status = NOT_IN_TIMER;
+                _timer->elem_cnt --;
+                _timer->mem_ocupy -= sizeof(timer_elem_t);
+            }
 
             /* update timer queue's last_expire_time */
             if(!TAILQ_EMPTY(&(_timer->timer_queue.queue)))
             {
-                timer_elem_t * tail = TAILQ_LAST(&(_timer->timer_queue.queue), TQ);
+                timer_elem_t *tail = TAILQ_LAST(&(_timer->timer_queue.queue), TQ);
                 _timer->timer_queue.last_expire_time = tail->expire;
             }
             else
@@ -429,13 +487,26 @@ int MESA_timer_reset(MESA_timer_t * timer, MESA_timer_index_t * index, long curr
             _timer->timer_queue.last_expire_time = expire;
             elem->expire = expire;
             /* insert a timer ENTRYS to tail of timer queue */
-            TAILQ_INSERT_TAIL(&(_timer->timer_queue.queue), elem, ENTRYS);
+            if(elem->status == NOT_IN_TIMER)
+            {
+                TAILQ_INSERT_TAIL(&(_timer->timer_queue.queue), elem, ENTRYS);
+                elem->status = IN_TIMER;
+                _timer->elem_cnt ++;
+                _timer->mem_ocupy += sizeof(timer_elem_t);
+            }
+            
             return 0;
         }
         case TM_TYPE_WHEEL:
         {
-            timer_wheel_t * wheel = &(_timer->timer_wheel);
-            TAILQ_REMOVE(&(wheel->spokes[elem->cursor]), elem, ENTRYS);
+            timer_wheel_t *wheel = &(_timer->timer_wheel);
+            if(elem->status == IN_TIMER)
+            {
+                TAILQ_REMOVE(&(wheel->spokes[elem->cursor]), elem, ENTRYS);
+                elem->status = NOT_IN_TIMER;
+                _timer->elem_cnt --;
+                _timer->mem_ocupy -= sizeof(timer_elem_t);
+            }
 
             /* the first timer ENTRYS start the timer, and current_time's relative time is 0 */
             if(wheel->last_check_relative_tick == -1)
@@ -452,7 +523,13 @@ int MESA_timer_reset(MESA_timer_t * timer, MESA_timer_index_t * index, long curr
             elem->cursor = cursor;
 
             /* insert a timer ENTRYS to tail of timer queue */
-            TAILQ_INSERT_TAIL(&(wheel->spokes[cursor]), elem, ENTRYS);
+            if(elem->status == NOT_IN_TIMER)
+            {
+                TAILQ_INSERT_TAIL(&(wheel->spokes[cursor]), elem, ENTRYS);
+                elem->status = IN_TIMER;
+                _timer->elem_cnt ++;
+                _timer->mem_ocupy += sizeof(timer_elem_t);
+            }
             return 0;
         }
         default:
@@ -463,8 +540,7 @@ int MESA_timer_reset(MESA_timer_t * timer, MESA_timer_index_t * index, long curr
 }
 
 
-
-long MESA_timer_count(MESA_timer_t * timer)
+long MESA_timer_count(MESA_timer_t *timer)
 {
     assert(timer != NULL);
     return ((MESA_timer_inner_t *)timer)->elem_cnt;
@@ -472,14 +548,9 @@ long MESA_timer_count(MESA_timer_t * timer)
 
 
 
-long MESA_timer_memsize(MESA_timer_t * timer)
+long MESA_timer_memsize(MESA_timer_t *timer)
 {
     assert(timer != NULL);
     return ((MESA_timer_inner_t *)timer)->mem_ocupy;
 }
 
-
-
-#ifdef __cplusplus
-}
-#endif
