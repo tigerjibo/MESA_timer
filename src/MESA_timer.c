@@ -392,6 +392,8 @@ long MESA_timer_check(MESA_timer_t *timer, long current_time, long max_cb_times)
 
             int i, cb_max_flag = 0;
             long tickcnt = current_time - wheel->create_time - wheel->last_check_relative_tick;
+            wheel->last_check_relative_tick += tickcnt;
+
             for(i = 0; i < tickcnt; i++)
             {
                 spoke = &(wheel->spokes[wheel->spoke_index]);
@@ -436,7 +438,6 @@ long MESA_timer_check(MESA_timer_t *timer, long current_time, long max_cb_times)
                     break;
                 wheel->spoke_index = (wheel->spoke_index + 1) % wheel->wheel_size;
             }
-            wheel->last_check_relative_tick = current_time - wheel->create_time;
             return cb_cnt;
         }
         default:
@@ -515,6 +516,17 @@ int MESA_timer_reset(MESA_timer_t *timer, MESA_timer_index_t *index, long curren
                 wheel->last_check_relative_tick = 0;
                 wheel->spoke_index = 0;
             }
+
+            /* if expire time of user's reset operation is earlier than Timer's current time, 
+             * we need set it with current time and make it timeout when next checking */
+            long timer_curr_time = wheel->create_time + wheel->last_check_relative_tick;
+            long user_reset_expire_time = current_time + timeout;
+            if(timer_curr_time >= user_reset_expire_time)
+            {
+                timeout = 1;
+                current_time = timer_curr_time;
+            }
+
             elem->expire = current_time + timeout;
 
             long td = timeout % wheel->wheel_size;
